@@ -1,5 +1,5 @@
 import modif_bert
-import transformers_pruned
+import transformers
 from torch import nn, optim
 import torch.nn.functional as F
 import torch
@@ -107,7 +107,7 @@ def main():
 
     weights = 'bert-base-uncased'
 
-    tokenizer = transformers_pruned.transformers.BertTokenizer.from_pretrained(weights)
+    tokenizer = transformers.BertTokenizer.from_pretrained(weights)
 
     model = modif_bert.BertForMaskedLM.from_pretrained(weights)
     bert_model = model.bert
