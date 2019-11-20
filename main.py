@@ -61,10 +61,10 @@ def clip_value(model, min=0., max=10.):
         if param.requires_grad:
             param.data.clamp_(min=min, max=max)
 
-def init_gates(model, lr):
+def init_gates(model, lr, index_target):
     for param in model.parameters():
         param.requires_grad = False
-    model.init_head_gates()
+    model.init_head_gates(index_target)
     return optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
 
 def gates_values(model):
@@ -98,7 +98,7 @@ def prune_heads(tokenizer, bert_model, language_model, sigma, index_target, targ
         clip_value(bert_model)
     #print_tokens(prediction_scores, tokenizer, index_target)
     print ("{}".format(n.item()))
-    return gates_values(bert_model)    
+    return gates_values(bert_model), bert_model.retrieve_attention_prob()
 
 def main():
     lr = 0.1
@@ -116,29 +116,36 @@ def main():
     KD_loss = nn.KLDivLoss(reduction='batchmean')
     CE_loss = nn.CrossEntropyLoss()
 
+    #former_texts = []
+    #with open("./res.json", "r") as f:
+    #    former_texts = [ " ".join(json.loads(l)["text"]) for l in f.readlines() ]
+
     corpus = open("../corpus.txt").readlines()
     for text, pos, dep in gen_sent(corpus):
-        
+
         #mask = mask_unk(text)
         print (" ".join(text))
 
         res = []
         for input_ids, target_ids, index_target, tokens in encode_ids(text, tokenizer):
             
+            #if " ".join(tokens) in former_texts:
+            #    continue
+           
             print ()
             print (tokens[index_target], pos[index_target-1], dep[index_target-1])
             #print ("*#*\n")
 
-            optimizer = init_gates(bert_model, lr)
+            optimizer = init_gates(bert_model, lr, index_target)
             #target_scores = get_target(target_ids, language_model, bert_model, index_target)
             #print_tokens(target_scores, tokenizer, index_target)
 
-            gates = prune_heads(tokenizer, bert_model, language_model, sigma, index_target, target_ids, input_ids, epochs, CE_loss, optimizer)
+            gates, att_probs = prune_heads(tokenizer, bert_model, language_model, sigma, index_target, target_ids, input_ids, epochs, CE_loss, optimizer)
             #print (round_gates(gates.copy()).flatten())
             #print ()
             res += [{"gates": gates.flatten().tolist(), "token": tokens[index_target], "pos": pos[index_target-1], "dep": dep[index_target-1] }]
 
-        with open("./res.json", "a") as f:
-            f.write(json.dumps({"text": tokens, "tokens": res }) + "\n")
+        #with open("./res.json", "a") as f:
+        #    f.write(json.dumps({"text": tokens, "tokens": res }) + "\n")
 
 main()

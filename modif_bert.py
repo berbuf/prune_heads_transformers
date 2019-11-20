@@ -14,8 +14,11 @@ class BertAttention(nn.Module):
         self.output = BertSelfOutput(config)
         self.pruned_heads = set()
 
-    def init_head_gates(self):
-        self.self.init_head_gates()
+    def init_head_gates(self, index_target):
+        self.self.init_head_gates(index_target)
+
+    def retrieve_attention_prob(self):
+        return self.self.retrieve_attention_prob()
 
     def prune_heads(self, heads):
         if len(heads) == 0:
@@ -56,8 +59,11 @@ class BertLayer(nn.Module):
         self.intermediate = BertIntermediate(config)
         self.output = BertOutput(config)
 
-    def init_head_gates(self):
-        self.attention.init_head_gates()
+    def init_head_gates(self, index_target):
+        self.attention.init_head_gates(index_target)
+
+    def retrieve_attention_prob(self):
+        return self.attention.retrieve_attention_prob()
 
     def forward(self, hidden_states, attention_mask=None, head_mask=None, encoder_hidden_states=None, encoder_attention_mask=None):
         self_attention_outputs = self.attention(hidden_states, attention_mask, head_mask)
@@ -81,9 +87,12 @@ class BertEncoder(nn.Module):
         self.output_hidden_states = config.output_hidden_states
         self.layer = nn.ModuleList([BertLayer(config) for _ in range(config.num_hidden_layers)])
 
-    def init_head_gates(self):
+    def init_head_gates(self, index_target):
         for layer_module in self.layer:
-            layer_module.init_head_gates()
+            layer_module.init_head_gates(index_target)
+
+    def retrieve_attention_prob(self):
+        return [ layer_module.retrieve_attention_prob() for layer_module in self.layer ]
 
     def forward(self, hidden_states, attention_mask=None, head_mask=None, encoder_hidden_states=None, encoder_attention_mask=None):
         all_hidden_states = ()
@@ -110,7 +119,7 @@ class BertEncoder(nn.Module):
         return outputs  # last-layer hidden state, (all hidden states), (all attentions)
 
 
-class BertModel(ransformers.BertPreTrainedModel):
+class BertModel(transformers.BertPreTrainedModel):
     r"""                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               
     Outputs: `Tuple` comprising various elements depending on the configuration (config) and inputs:                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
         **last_hidden_state**: ``torch.FloatTensor`` of shape ``(batch_size, sequence_length, hidden_size)``                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           
@@ -149,9 +158,12 @@ class BertModel(ransformers.BertPreTrainedModel):
 
         self.init_weights()
 
-    def init_head_gates(self):
-        self.encoder.init_head_gates()
-        
+    def init_head_gates(self, index_target):
+        self.encoder.init_head_gates(index_target)
+
+    def retrieve_attention_prob(self):
+        return self.encoder.retrieve_attention_prob()
+
     def get_input_embeddings(self):
         return self.embeddings.word_embeddings
 
@@ -265,7 +277,7 @@ class BertModel(ransformers.BertPreTrainedModel):
         outputs = (sequence_output, pooled_output,) + encoder_outputs[1:]  # add hidden_states and attentions if they are here                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         
         return outputs  # sequence_output, pooled_output, (hidden_states), (attentions)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
 
-class BertForMaskedLM(transformers.transformers.BertPreTrainedModel):
+class BertForMaskedLM(transformers.BertPreTrainedModel):
     r"""                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             
         **masked_lm_labels**: (`optional`) ``torch.LongTensor`` of shape ``(batch_size, sequence_length)``:                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          
             Labels for computing the masked language modeling loss.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  
@@ -369,13 +381,17 @@ class BertSelfAttention(nn.Module):
 
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
-        #self.gates = nn.Parameter(torch.ones(self.num_attention_heads).reshape(1, self.num_attention_heads, 1, 1))
-
-    def init_head_gates(self):
-        self.gates = nn.Parameter(torch.ones(self.num_attention_heads).reshape(1, self.num_attention_heads, 1, 1))
-        #self.gates = nn.Parameter(torch.rand(self.num_attention_heads).reshape(1, self.num_attention_heads, 1, 1))
+    def init_head_gates(self, index_target):
+        self.gates = nn.Parameter(torch.ones(self.num_attention_heads))
+        self.index_target = index_target
         self.gates.requires_grad = True
-        
+
+    def retrieve_attention_prob(self):
+        mask = torch.ones(self.att_probs.shape[1:-1])
+        mask[:,self.index_target] *= self.gates
+        mask = mask[None,:,:,None]
+        return (self.att_probs * mask).squeeze()[:,self.index_target]
+
     def transpose_for_scores(self, x):
         new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
         x = x.view(*new_x_shape)
@@ -413,11 +429,18 @@ class BertSelfAttention(nn.Module):
         # seem a bit unusual, but is taken from the original Transformer paper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      
         attention_probs = self.dropout(attention_probs)
 
-        # Mask heads if we want to                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   
+        # Mask heads if we want to
+
         if head_mask is not None:
             attention_probs = attention_probs * head_mask
 
-        attention_probs = attention_probs * self.gates
+        # gated mask
+        mask = torch.ones(attention_probs.shape[1:-1])
+        mask[:,self.index_target] *= self.gates
+        mask = mask[None,:,:,None]
+        attention_probs = attention_probs * mask
+        self.att_probs = attention_probs
+
         context_layer = torch.matmul(attention_probs, value_layer)
 
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()

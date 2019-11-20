@@ -170,7 +170,6 @@ def cached_path(url_or_filename, cache_dir=None, force_download=False, proxies=N
         cache_dir = str(cache_dir)
 
     parsed = urlparse(url_or_filename)
-
     if parsed.scheme in ('http', 'https', 's3'):
         # URL, so get it from the cache (downloading if necessary)
         return get_from_cache(url_or_filename, cache_dir=cache_dir, force_download=force_download, proxies=proxies)
@@ -320,5 +319,4 @@ def get_from_cache(url, cache_dir=None, force_download=False, proxies=None, etag
                 meta_file.write(output_string)
 
             logger.info("removing temp file %s", temp_file.name)
-
     return cache_path
