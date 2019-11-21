@@ -387,11 +387,15 @@ class BertSelfAttention(nn.Module):
         self.gates.requires_grad = True
 
     def retrieve_attention_prob(self):
-        mask = torch.ones(self.att_probs.shape[1:-1])
+        return self.gated_mult(self.att_probs).squeeze()[:,self.index_target]
+
+    def gated_mult(self, attention_probs):
+        # gated mask
+        mask = torch.ones(attention_probs.shape[1:-1])
         mask[:,self.index_target] *= self.gates
         mask = mask[None,:,:,None]
-        return (self.att_probs * mask).squeeze()[:,self.index_target]
-
+        return attention_probs * mask
+    
     def transpose_for_scores(self, x):
         new_x_shape = x.size()[:-1] + (self.num_attention_heads, self.attention_head_size)
         x = x.view(*new_x_shape)
@@ -434,14 +438,11 @@ class BertSelfAttention(nn.Module):
         if head_mask is not None:
             attention_probs = attention_probs * head_mask
 
-        # gated mask
-        mask = torch.ones(attention_probs.shape[1:-1])
-        mask[:,self.index_target] *= self.gates
-        mask = mask[None,:,:,None]
-        attention_probs = attention_probs * mask
-        self.att_probs = attention_probs
+        attention_probs = self.gated_mask(attention_probs)
 
         context_layer = torch.matmul(attention_probs, value_layer)
+        
+        self.att_probs = attention_probs
 
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
