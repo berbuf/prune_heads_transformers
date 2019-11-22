@@ -13,14 +13,6 @@ def gen_sent(corpus):
         for sent in nlp(doc).sents:
             yield list(zip(*[ [t.text.lower(), t.pos_, t.dep_] for t in sent ]))
 
-def mask_unk(text):
-    target_ids = torch.tensor([tokenizer.encode(text, add_special_tokens=True)])
-    mask = [1] * len(target_ids[0])
-    for i in range(1, len(target_ids[0]) - 1):
-        if target_ids[i] == 100:   
-            mask[i] = 0
-    return mask
-
 def encode_ids(text, tokenizer):
     target_ids = torch.tensor([tokenizer.encode(text, add_special_tokens=True)])
     tok = [ tokenizer._convert_id_to_token(t) for t in target_ids[0].numpy() ]
@@ -32,11 +24,6 @@ def encode_ids(text, tokenizer):
         yield input_ids, target_ids, index_target, tok
         input_ids[0][index_target] = target_ids[0][index_target]
 
-def loss_distrib(loss_fn, prediction_scores, teacher):
-    input = prediction_scores[0][index_target].view(-1, prediction_scores.shape[2])
-    student = F.log_softmax(input, dim=-1)
-    return loss_fn(student, teacher)
-
 def loss_cross_entropy(loss_fn, prediction_scores, target_ids, index_target):
     input = prediction_scores[0][index_target].view(-1, prediction_scores.shape[2])
     target = target_ids[0][index_target].view(-1)
@@ -44,7 +31,7 @@ def loss_cross_entropy(loss_fn, prediction_scores, target_ids, index_target):
 
 def print_tokens(prediction_scores, tokenizer, index_target):
     a = prediction_scores[0][index_target].view(-1, prediction_scores.shape[2])
-    d = np.argsort(-a[0].detach().numpy())
+    d = np.argsort(-a[0].detach().cpu().numpy())
     for i in d[:10]:
         print ("{:<20}{:<20}{}".format(tokenizer._convert_id_to_token(i), i, a[0][i]))
     print ()
@@ -71,81 +58,70 @@ def gates_values(model):
     gates = list(filter(lambda p: p.requires_grad, model.parameters()))
     return np.array([ e.cpu().detach().numpy().flatten() for e in gates ])
 
-def round_gates(gates):
-    gates[gates < 0.5] = 0
-    gates[gates > 0.5] = 1
-    return gates
+def att_prob_values(model):
+    att_probs = model.retrieve_attention_prob()
+    return [ [ 0 if sum(x) == 0 else x for x in  e.cpu().detach().numpy().tolist() ] for e in att_probs]
 
-def get_target(target_ids, language_model, bert_model, index_target):
+def get_target(target_ids, model, index_target):
     with torch.no_grad():
-        outputs = bert_model(target_ids)
-        prediction_scores = language_model(outputs[0])
-        #target_scores = prediction_scores[0][index_target].view(-1, prediction_scores.shape[2])
-        #teacher = F.softmax(target_scores, dim=-1)
-        return prediction_scores#, teacher
+        prediction_scores = model(target_ids)
+        return prediction_scores
 
-def prune_heads(tokenizer, bert_model, language_model, sigma, index_target, target_ids, input_ids, epochs, loss_fn, optimizer):
-    #prediction_scores = language_model(bert_model(input_ids)[0])
-    #print_tokens(prediction_scores, tokenizer, index_target)
+def prune_heads(tokenizer, model, sigma, index_target, target_ids, input_ids, epochs, loss_fn, optimizer):
     for _ in range(epochs):
         optimizer.zero_grad()
-        prediction_scores = language_model(bert_model(input_ids)[0])
+        prediction_scores = model(input_ids)
         l = loss_cross_entropy(loss_fn, prediction_scores, target_ids, index_target)
-        n = norm1(bert_model)
+        n = norm1(model)
         l += (sigma * n)
         l.backward()
         optimizer.step()
-        clip_value(bert_model)
-    #print_tokens(prediction_scores, tokenizer, index_target)
-    print ("{}".format(n.item()))
-    return gates_values(bert_model), bert_model.retrieve_attention_prob()
+        clip_value(model)
+    print ("gates remaining: {}".format(n.item()))
+    print_tokens(prediction_scores, tokenizer, index_target)
+    return gates_values(model), model.retrieve_attention_prob()
 
 def main():
     lr = 0.1
     sigma = 0.1
-    epochs = 50
+    epochs = 100
 
     weights = 'bert-base-uncased'
 
     tokenizer = transformers.BertTokenizer.from_pretrained(weights)
 
     model = modif_bert.BertForMaskedLM.from_pretrained(weights)
-    bert_model = model.bert
-    language_model = model.cls
+    model.to('cuda')
 
     KD_loss = nn.KLDivLoss(reduction='batchmean')
     CE_loss = nn.CrossEntropyLoss()
 
-    #former_texts = []
-    #with open("./res.json", "r") as f:
-    #    former_texts = [ " ".join(json.loads(l)["text"]) for l in f.readlines() ]
+    former_texts = []
+    with open("./res.json", "r") as f:
+        former_texts = [ " ".join(json.loads(l)["text"]) for l in f.readlines() ]
 
     corpus = open("../corpus.txt").readlines()
     for text, pos, dep in gen_sent(corpus):
 
-        #mask = mask_unk(text)
         print (" ".join(text))
+        target_ids = torch.tensor([tokenizer.encode(text, add_special_tokens=True)])
+        if " ".join([ tokenizer._convert_id_to_token(t) for t in target_ids[0].numpy() ]) in former_texts:
+            continue
 
         res = []
         for input_ids, target_ids, index_target, tokens in encode_ids(text, tokenizer):
             
-            #if " ".join(tokens) in former_texts:
-            #    continue
-           
+    
             print ()
             print (tokens[index_target], pos[index_target-1], dep[index_target-1])
-            #print ("*#*\n")
 
-            optimizer = init_gates(bert_model, lr, index_target)
-            #target_scores = get_target(target_ids, language_model, bert_model, index_target)
-            #print_tokens(target_scores, tokenizer, index_target)
+            optimizer = init_gates(model, lr, index_target)
 
-            gates, att_probs = prune_heads(tokenizer, bert_model, language_model, sigma, index_target, target_ids, input_ids, epochs, CE_loss, optimizer)
-            #print (round_gates(gates.copy()).flatten())
-            #print ()
-            res += [{"gates": gates.flatten().tolist(), "token": tokens[index_target], "pos": pos[index_target-1], "dep": dep[index_target-1] }]
+            target_ids, input_ids = target_ids.to("cuda"), input_ids.to("cuda")
+            gates, att_probs = prune_heads(tokenizer, model, sigma, index_target, target_ids, input_ids, epochs, CE_loss, optimizer)
+            res += [{"gates": gates.flatten().tolist(), "attention": att_prob_values(model), "token": tokens[index_target], "pos": pos[index_target-1], "dep": dep[index_target-1] }]
 
-        #with open("./res.json", "a") as f:
-        #    f.write(json.dumps({"text": tokens, "tokens": res }) + "\n")
+        with open("./res.json", "a") as f:
+            f.write(json.dumps({"text": tokens, "tokens": res }) + "\n")
 
 main()

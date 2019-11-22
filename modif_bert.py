@@ -322,6 +322,12 @@ class BertForMaskedLM(transformers.BertPreTrainedModel):
 
         self.init_weights()
 
+    def init_head_gates(self, index_target):
+        self.bert.init_head_gates(index_target)
+
+    def retrieve_attention_prob(self):
+        return self.bert.retrieve_attention_prob()
+
     def get_output_embeddings(self):
         return self.cls.predictions.decoder
 
@@ -338,6 +344,7 @@ class BertForMaskedLM(transformers.BertPreTrainedModel):
 
         sequence_output = outputs[0]
         prediction_scores = self.cls(sequence_output)
+        return prediction_scores
 
         outputs = (prediction_scores,) + outputs[2:]  # Add hidden states and attention if they are here
 
@@ -382,7 +389,7 @@ class BertSelfAttention(nn.Module):
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
     def init_head_gates(self, index_target):
-        self.gates = nn.Parameter(torch.ones(self.num_attention_heads))
+        self.gates = nn.Parameter(torch.ones(self.num_attention_heads).to("cuda"))
         self.index_target = index_target
         self.gates.requires_grad = True
 
@@ -391,7 +398,7 @@ class BertSelfAttention(nn.Module):
 
     def gated_mult(self, attention_probs):
         # gated mask
-        mask = torch.ones(attention_probs.shape[1:-1])
+        mask = torch.ones(attention_probs.shape[1:-1]).to("cuda")
         mask[:,self.index_target] *= self.gates
         mask = mask[None,:,:,None]
         return attention_probs * mask
@@ -438,7 +445,7 @@ class BertSelfAttention(nn.Module):
         if head_mask is not None:
             attention_probs = attention_probs * head_mask
 
-        attention_probs = self.gated_mask(attention_probs)
+        attention_probs = self.gated_mult(attention_probs)
 
         context_layer = torch.matmul(attention_probs, value_layer)
         
