@@ -26,7 +26,7 @@ class BertAttention(nn.Module):
         mask = torch.ones(self.self.num_attention_heads, self.self.attention_head_size)
         heads = set(heads) - self.pruned_heads  # Convert to set and emove already pruned heads                                                                                                                                                                       
         for head in heads:
-            # Compute how many pruned heads are before the head and move the index accordingly                                                                                                                                                                        
+            # Compute how many pruned heads are before the head and move the index accordingly                                                                                                                  
             head = head - sum(1 if h < head else 0 for h in self.pruned_heads)
             mask[head] = 0
         mask = mask.view(-1).contiguous().eq(1)
@@ -389,7 +389,8 @@ class BertSelfAttention(nn.Module):
         self.dropout = nn.Dropout(config.attention_probs_dropout_prob)
 
     def init_head_gates(self, index_target):
-        self.gates = nn.Parameter(torch.ones(self.num_attention_heads).to("cuda"))
+        to_cuda = lambda x: x.to("cuda") if torch.cuda.is_available() else x
+        self.gates = nn.Parameter(to_cuda(torch.ones(self.num_attention_heads)))
         self.index_target = index_target
         self.gates.requires_grad = True
 
@@ -398,7 +399,8 @@ class BertSelfAttention(nn.Module):
 
     def gated_mult(self, attention_probs):
         # gated mask
-        mask = torch.ones(attention_probs.shape[1:-1]).to("cuda")
+        to_cuda = lambda x: x.to("cuda") if torch.cuda.is_available() else x
+        mask = to_cuda(torch.ones(attention_probs.shape[1:-1]))
         mask[:,self.index_target] *= self.gates
         mask = mask[None,:,:,None]
         return attention_probs * mask
